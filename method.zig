@@ -15,9 +15,9 @@ const GetResponse = struct {
 };
 
 const ChangesRequest = struct {
-    accountId: types.Id,
-    sinceState: []u8,
-    maxChanges: ?types.UnsignedInt,
+    account_id: types.Id,
+    since_state: []u8,
+    max_changes: ?types.UnsignedInt,
 };
 
 const ChangesResponse = struct {
