@@ -1,6 +1,6 @@
 /// Id is a String of 1-255 characters from the set {A-Z, a-z, 0-9, -, _}. It
 /// should be prefixed with an alphabetical character. [RFC 8620, 1.2]
-pub const Id = []u8;
+pub const Id = []const u8;
 
 // TODO figure out correct bit range
 

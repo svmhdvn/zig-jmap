@@ -1,12 +1,75 @@
-const types = @import("types");
+const std = @import("std");
+const types = @import("types.zig");
+const Allocator = std.mem.Allocator;
+const Value = std.json.Value;
 
-const GetRequest = struct {
+pub const method = struct {
+    fn toJsonArray(thing: var, allocator: *Allocator) std.json.Array {
+        var arr = std.json.Array.initCapacity(allocator, thing.len) catch unreachable;
+        for (thing) |el| {
+            arr.appendAssumeCapacity(toJson(el, allocator));
+        }
+        return arr;
+    }
+
+    pub fn toJson(thing: var, allocator: *Allocator) Value {
+        const T = @TypeOf(thing);
+        if (comptime std.meta.trait.hasFn("toJson")(T)) {
+            return T.toJson(thing, allocator);
+        }
+
+        const type_info = @typeInfo(T);
+        return switch (type_info) {
+            .Array => Value{ .Array = toJsonArray(thing, allocator) },
+            .Bool => Value{ .Bool = thing },
+            // TODO camelCase enum value string
+            .Enum => Value{ .String = @tagName(thing) },
+            .Float, .ComptimeFloat => Value{ .Float = thing },
+            .Int, .ComptimeInt => Value{ .Integer = @intCast(i64, thing) },
+            .Optional => if (thing) |thing_unwrapped|
+                toJson(thing_unwrapped, allocator)
+            else
+                Value{ .Null = {} },
+            .Pointer => |p| if (p.child == u8)
+                Value{ .String = thing }
+            else switch (p.size) {
+                .One => toJson(thing.*, allocator),
+                .Many, .Slice => Value{ .Array = toJsonArray(thing, allocator) },
+                else => Value{ .Null = {} },
+            },
+            .Struct => |s| blk: {
+                // TODO check if the struct in question is already a map
+                var map = std.json.ObjectMap.init(allocator);
+                // TODO fix this
+                map.ensureCapacity(s.fields.len) catch unreachable;
+                inline for (s.fields) |field| {
+                    const name = field.name;
+                    const serialized_field = toJson(@field(thing, name), allocator);
+                    _ = map.putAssumeCapacity(name, serialized_field);
+                }
+                break :blk Value{ .Object = map };
+            },
+            .Union => |u| blk: {
+                const tag_int = @enumToInt(std.meta.activeTag(thing));
+                inline for (u.fields) |field| {
+                    if (tag_int == field.enum_field.?.value) {
+                        break :blk toJson(@field(thing, field.name), allocator);
+                    }
+                }
+                unreachable;
+            },
+            else => Value.Null,
+        };
+    }
+};
+
+pub const GetRequest = struct {
     accountId: types.Id,
-    ids: ?[]types.Id,
+    ids: ?[]const types.Id,
     properties: ?[][]u8,
 };
 
-const GetResponse = struct {
+pub const GetResponse = struct {
     accountId: types.Id,
     state: []u8,
     // TODO figure out how to encode Foo object
@@ -14,13 +77,13 @@ const GetResponse = struct {
     notFound: []types.Id,
 };
 
-const ChangesRequest = struct {
+pub const ChangesRequest = struct {
     account_id: types.Id,
     since_state: []u8,
     max_changes: ?types.UnsignedInt,
 };
 
-const ChangesResponse = struct {
+pub const ChangesResponse = struct {
     accountId: types.Id,
     oldState: []u8,
     newState: []u8,
@@ -30,12 +93,12 @@ const ChangesResponse = struct {
     destroyed: []types.Id,
 };
 
-const SetError = struct {
+pub const SetError = struct {
     type: []u8,
     description: ?[]u8,
 };
 
-const SetRequest = struct {
+pub const SetRequest = struct {
     accountId: types.Id,
     ifInState: ?[]u8,
     // TODO figure out maps
@@ -44,7 +107,7 @@ const SetRequest = struct {
     destroy: ?[]types.Id,
 };
 
-const SetResponse = struct {
+pub const SetResponse = struct {
     accountId: types.Id,
     oldState: ?[]u8,
     newState: []u8,
@@ -57,7 +120,7 @@ const SetResponse = struct {
     notDestroyed: ?std.AutoHashMap(types.Id, SetError),
 };
 
-const CopyRequest = struct {
+pub const CopyRequest = struct {
     fromAccountId: types.Id,
     ifFromInState: ?[]u8,
     accountId: types.Id,
@@ -68,7 +131,7 @@ const CopyRequest = struct {
     destroyFromIfInState: ?[]u8,
 };
 
-const CopyResponse = struct {
+pub const CopyResponse = struct {
     fromAccountId: types.Id,
     accountId: types.Id,
     oldState: ?[]u8,
@@ -78,24 +141,24 @@ const CopyResponse = struct {
     notCreated: ?std.AutoHashMap(types.Id, SetError),
 };
 
-const FilterTag = enum {
+pub const FilterTag = enum {
     FilterOperator,
     FilterCondition,
 };
 
-const Filter = union(FilterTag) {
+pub const Filter = union(FilterTag) {
     FilterOperator: FilterOperator,
     FilterCondition: FilterCondition,
 };
 
-const FilterOperator = struct {
+pub const FilterOperator = struct {
     operator: []u8,
     conditions: []Filter,
 };
 
 // TODO FilterCondition
 
-const Comparator = struct {
+pub const Comparator = struct {
     property: []u8,
     isAscending: bool = true,
     collation: []u8,
@@ -106,13 +169,13 @@ const Comparator = struct {
     calculateTotal: bool = false,
 };
 
-const QueryRequest = struct {
+pub const QueryRequest = struct {
     accountId: types.Id,
     filter: ?Filter,
     sort: ?[]Comparator,
 };
 
-const QueryResponse = struct {
+pub const QueryResponse = struct {
     accountId: types.Id,
     queryState: []u8,
     canCalculateChanges: bool,
@@ -122,7 +185,7 @@ const QueryResponse = struct {
     limit: ?types.UnsignedInt,
 };
 
-const QueryChangesRequest = struct {
+pub const QueryChangesRequest = struct {
     accountId: types.Id,
     filter: ?Filter,
     sort: ?[]Comparator,
@@ -132,12 +195,12 @@ const QueryChangesRequest = struct {
     calculateTotal: bool = false,
 };
 
-const AddedItem = struct {
+pub const AddedItem = struct {
     id: types.Id,
-    indes: types.UnsignedInt,
+    index: types.UnsignedInt,
 };
 
-const QueryChangesResponse = struct {
+pub const QueryChangesResponse = struct {
     accountId: types.Id,
     oldQueryState: []u8,
     newQueryState: []u8,
@@ -146,27 +209,27 @@ const QueryChangesResponse = struct {
     added: []AddedItem,
 };
 
-const DownloadRequest = struct {
+pub const DownloadRequest = struct {
     accountId: types.Id,
     blobId: types.Id,
     type: []u8,
     name: []u8,
 };
 
-const UploadResponse = struct {
+pub const UploadResponse = struct {
     accountId: types.Id,
     blobId: types.Id,
     type: []u8,
     size: types.UnsignedInt,
 };
 
-const BlobCopyRequest = struct {
+pub const BlobCopyRequest = struct {
     fromAccountId: types.Id,
     accountId: types.Id,
     blobIds: []types.Id,
 };
 
-const BlobCopyResponse = struct {
+pub const BlobCopyResponse = struct {
     fromAccountId: types.Id,
     accountId: types.Id,
     copied: ?std.AutoHashMap(types.Id, types.Id),
