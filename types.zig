@@ -13,7 +13,7 @@ pub const Int = i64;
 pub const UnsignedInt = u64;
 
 /// Date is a String in "date-time" format [RFC 3339, 5.6]
-pub const Date = []u8;
+pub const Date = []const u8;
 
 /// UTCDate is a Date where the "time-offset" is "Z"
 pub const UTCDate = Date;

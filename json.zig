@@ -2,6 +2,71 @@ const std = @import("std");
 const types = @import("types");
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
+const Array = std.json.Array;
+const ObjectMap = std.json.ObjectMap;
+
+pub const json_serializer = struct {
+    fn toJsonArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
+        var arr = try Array.initCapacity(allocator, thing.len);
+        for (thing) |el| {
+            arr.appendAssumeCapacity(try toJson(el, allocator));
+        }
+        return arr;
+    }
+
+    pub fn toJson(thing: var, allocator: *Allocator) Allocator.Error!Value {
+        const T = @TypeOf(thing);
+        if (T == Value) {
+            return thing;
+        }
+
+        if (comptime std.meta.trait.hasFn("toJson")(T)) {
+            return T.toJson(thing, allocator);
+        }
+
+        const type_info = @typeInfo(T);
+        return switch (type_info) {
+            .Array => Value{ .Array = try toJsonArray(thing, allocator) },
+            .Bool => Value{ .Bool = thing },
+            // TODO camelCase enum value string
+            .Enum => Value{ .String = @tagName(thing) },
+            .Float, .ComptimeFloat => Value{ .Float = thing },
+            .Int, .ComptimeInt => Value{ .Integer = @intCast(i64, thing) },
+            .Optional => if (thing) |thing_unwrapped|
+                toJson(thing_unwrapped, allocator)
+            else
+                Value{ .Null = {} },
+            .Pointer => |p| if (p.child == u8)
+                Value{ .String = thing }
+            else switch (p.size) {
+                .One => toJson(thing.*, allocator),
+                .Many, .Slice => Value{ .Array = try toJsonArray(thing, allocator) },
+                else => Value{ .Null = {} },
+            },
+            .Struct => |s| blk: {
+                var map = ObjectMap.init(allocator);
+                try map.ensureCapacity(s.fields.len);
+                inline for (s.fields) |field| {
+                    const name = field.name;
+                    const serialized_field = try toJson(@field(thing, name), allocator);
+                    _ = map.putAssumeCapacity(name, serialized_field);
+                }
+                break :blk Value{ .Object = map };
+            },
+            // TODO figure out what to do about untagged bare unions
+            .Union => |u| blk: {
+                const tag_int = @enumToInt(std.meta.activeTag(thing));
+                inline for (u.fields) |field| {
+                    if (tag_int == field.enum_field.?.value) {
+                        break :blk toJson(@field(thing, field.name), allocator);
+                    }
+                }
+                unreachable;
+            },
+            else => Value.Null,
+        };
+    }
+};
 
 const Invocation = struct {
     const Self = @This();
@@ -9,14 +74,14 @@ const Invocation = struct {
     /// Name of the method to call or of the response.
     name: []const u8,
 
-    arguments: std.json.ObjectMap,
+    arguments: ObjectMap,
 
     /// An arbitrary string from the client to be echoed back with the
     /// responses emitted by that method call.
-    method_call_id: []u8,
+    method_call_id: []const u8,
 
     pub fn toJson(self: Self, allocator: *Allocator) !Value {
-        var arr = try std.json.Array.initCapacity(allocator, 3);
+        var arr = try Array.initCapacity(allocator, 3);
         arr.appendAssumeCapacity(Value{ .String = self.name });
         arr.appendAssumeCapacity(Value{ .Object = self.arguments });
         arr.appendAssumeCapacity(Value{ .String = self.method_call_id });
@@ -26,10 +91,10 @@ const Invocation = struct {
 
 const Request = struct {
     /// The set of capabilities the client wishes to use.
-    using: [][]u8,
+    using: []const []const u8,
 
     /// An array of method calls to process on the server.
-    method_calls: []Invocation,
+    method_calls: []const Invocation,
 
     /// A map of a (client-specified) creation id to the id the server assigned
     /// when a record was successfully created.
@@ -39,26 +104,26 @@ const Request = struct {
 const Response = struct {
     /// An array of responses, in the same format as the "methodCalls" on the
     /// Request object.
-    method_responses: []Invocation,
+    method_responses: []const Invocation,
 
     /// A map of a (client-specified) creation id to the id the server assigned
     /// when a record was successfully created.
     created_ids: ?std.AutoHashMap(types.Id, types.Id),
 
     /// The current value of the "state" string on the Session object.
-    session_state: []u8,
+    session_state: []const u8,
 };
 
 const ResultReference = struct {
     /// The method call id of a previous method call in the current request.
-    result_of: []u8,
+    result_of: []const u8,
 
     /// The required name of a response to that method call.
-    name: []u8,
+    name: []const u8,
 
     /// A pointer into the arguments of the response selected via the name and
     /// resultOf properties.
-    path: []u8,
+    path: []const u8,
 };
 
 // TODO remove hardcoded "using" capability
