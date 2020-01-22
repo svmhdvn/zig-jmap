@@ -1,31 +1,25 @@
 const std = @import("std");
 
-const SomeUnion = union(enum) {
-    Int: i32,
-    Bool: bool,
-};
-
-pub fn recRefl(thing: var) SomeUnion {
-    const type_info = @typeInfo(@TypeOf(thing));
-    return switch (type_info) {
-        .Bool => SomeUnion{ .Bool = thing },
-        .Int => SomeUnion{ .Int = thing },
-        .Union => |u| blk: {
-            const tag_int = @enumToInt(std.meta.activeTag(thing));
-            inline for (u.fields) |field| {
-                if (field.enum_field.?.value == tag_int) {
-                    break :blk recRefl(@field(thing, field.name));
-                }
-            }
-            unreachable;
-        },
-        else => unreachable
-    };
+fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    var off: usize = 0;
+    while (i + off < str.len) : (i += 1) {
+        if (str[i + off] == '_') {
+            off += 1;
+            buf[i] = std.ascii.toUpper(str[i + off]);
+        } else {
+            buf[i] = str[i + off];
+        }
+    }
+    return buf[0..str.len - off];
 }
 
 pub fn main() void {
-    var x: i32 = 42;
-    const u_val = SomeUnion{ .Int = x };
-    const result = recRefl(u_val);
-    std.debug.warn("{}\n", .{result});
+    const camelCased = comptime blk: {
+        const name = "snake_case";
+        var buf: [name.len]u8 = undefined;
+        break :blk toCamelCase(name, buf[0..]);
+    };
+
+    std.debug.warn("{}\n", .{camelCased});
 }

@@ -5,7 +5,42 @@ const Value = std.json.Value;
 const Array = std.json.Array;
 const ObjectMap = std.json.ObjectMap;
 
+pub fn JsonStringMap(comptime V: type) type {
+    return struct {
+        const Self = @This();
+
+        map: std.StringHashMap(V),
+
+        pub fn toJson(self: Self, allocator: *Allocator) Allocator.Error!Value {
+            var map = ObjectMap.init(allocator);
+            try map.ensureCapacity(self.map.count());
+
+            var it = self.map.iterator();
+            while (it.next()) |kv| {
+                const json_val = try json_serializer.toJson(kv.value, allocator);
+                _ = map.putAssumeCapacity(kv.key, json_val);
+            }
+
+            return Value{ .Object = map };
+        }
+    };
+}
+
 pub const json_serializer = struct {
+    fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
+        var i: usize = 0;
+        var off: usize = 0;
+        while (i + off < str.len) : (i += 1) {
+            if (str[i + off] == '_') {
+                off += 1;
+                buf[i] = std.ascii.toUpper(str[i + off]);
+            } else {
+                buf[i] = str[i + off];
+            }
+        }
+        return buf[0..str.len - off];
+    }
+
     fn toJsonArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
         var arr = try Array.initCapacity(allocator, thing.len);
         for (thing) |el| {
@@ -48,8 +83,13 @@ pub const json_serializer = struct {
                 try map.ensureCapacity(s.fields.len);
                 inline for (s.fields) |field| {
                     const name = field.name;
+                    const camel_cased = comptime blk: {
+                        var buf: [name.len]u8 = undefined;
+                        break :blk toCamelCase(name, buf[0..]);
+                    };
+
                     const serialized_field = try toJson(@field(thing, name), allocator);
-                    _ = map.putAssumeCapacity(name, serialized_field);
+                    _ = map.putAssumeCapacity(camel_cased, serialized_field);
                 }
                 break :blk Value{ .Object = map };
             },
