@@ -30,25 +30,6 @@ const mail = struct {
         may_create_top_level_mailbox: bool,
     };
 
-    const Mailbox = DataType(struct {
-        id: types.Id,
-        name: []const u8,
-        parent_id: ?types.Id,
-        role: ?[]const u8,
-        sort_order: types.UnsignedInt = 0,
-        total_emails: types.UnsignedInt,
-        unread_emails: types.UnsignedInt,
-        total_threads: types.UnsignedInt,
-        unread_threads: types.UnsignedInt,
-        my_rights: MailboxRights,
-        is_subscribed: bool,
-    });
-
-    const Thread = DataType(struct {
-        id: types.Id,
-        email_ids: []const types.Id,
-    });
-
     const EmailHeader = struct {
         name: []const u8,
         value: []const u8,
@@ -107,12 +88,6 @@ const mail = struct {
         has_attachment: bool,
         preview: []const u8,
     });
-
-    const SearchSnippet = DataType(struct {
-        email_id: types.Id,
-        subject: ?[]const u8,
-        preview: ?[]const u8,
-    });
 };
 
 const submission = struct {
@@ -126,46 +101,6 @@ const submission = struct {
         ///which the client may use when creating an EmailSubmission object.
         submission_extensions: JsonStringMap([]const []const u8),
     };
-
-    const Identity = DataType(struct {
-        id: types.Id,
-        name: []const u8 = "",
-        email: []const u8,
-        reply_to: ?[]const EmailAddress,
-        bcc: ?[]const EmailAddress,
-        text_signature: []const u8 = "",
-        html_signature: []const u8 = "",
-        may_delete: bool,
-    });
-
-    const Address = struct {
-        email: []const u8,
-        parameters: ?JsonStringMap(?[]const u8),
-    };
-
-    const Envelope = struct {
-        mail_from: Address,
-        rcpt_to: []const Address,
-    };
-
-    const DeliveryStatus = struct {
-        smtp_reply: []const u8,
-        delivered: []const u8,
-        displayed: []const u8,
-    };
-
-    const EmailSubmission = DataType(struct {
-        id: types.Id,
-        identity_id: types.Id,
-        email_id: types.Id,
-        thread_id: types.Id,
-        envelope: ?Envelope,
-        send_at: types.UTCDate,
-        undo_status: []const u8,
-        delivery_status: ?JsonStringMap(DeliveryStatus),
-        dsn_blob_ids: []const types.Id,
-        mdn_blob_ids: []const types.Id,
-    });
 };
 
 const vacation_response = struct {

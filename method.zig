@@ -1,7 +1,10 @@
 const std = @import("std");
 const types = @import("types.zig");
+const json = @import("json.zig");
+
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
+const js = json.json_serializer;
 
 pub fn Method(comptime RequestType: type, comptime ResponseType: type) type {
     return struct {
@@ -57,9 +60,30 @@ pub const standard = struct {
         account_id: types.Id,
         if_in_state: ?[]const u8,
         create: ?JsonStringMap(T),
-        // TODO figure out how to write a PatchObject type
-        update: ?JsonStringMap(PatchObject),
+
+        // update is a mapping from Id to PatchObject, which is an arbitrary object based
+        // on the properties of the type it represents.
+        // TODO is this the best way to do this?
+        update: ?json.ObjectMap,
+
         destroy: ?[]const types.Id,
+
+        pub fn toJson(self: Self, allocator: *Allocator) !Value {
+            var map = ObjectMap.init(allocator);
+            try map.ensureCapacity(5);
+            _ = map.putAssumeCapacity("accountId", js.toJson(self.account_id, allocator));
+            _ = map.putAssumeCapacity("ifInState", js.toJson(self.if_in_state, allocator));
+            _ = map.putAssumeCapacity("create", js.toJson(self.create, allocator));
+            _ = map.putAssumeCapacity("destroy", js.toJson(self.destroy, allocator));
+
+            const update = if (self.update) |unwrapped|
+                Value{ .Object = unwrapped }
+            else
+                Value{ .Null = {} };
+            _ = map.putAssumeCapacity("update", update);
+
+            return Value{ .Object = map };
+        }
     };
 
     pub const SetResponse = struct {
@@ -93,17 +117,19 @@ pub const standard = struct {
         not_created: ?JsonStringMap(SetError),
     };
 
-    pub const Filter = union(enum) {
-        filter_operator: FilterOperator,
-        filter_condition: FilterCondition,
-    };
+    pub fn custom_filter(comptime C: type) type {
+        return struct {
+            pub const FilterOperator = struct {
+                operator: []const u8,
+                conditions: []const Filter,
+            };
 
-    pub const FilterOperator = struct {
-        operator: []const u8,
-        conditions: []const Filter,
-    };
-
-    // TODO FilterCondition
+            pub const Filter = union(enum) {
+                filter_operator: FilterOperator,
+                filter_condition: C,
+            };
+        };
+    }
 
     pub const Comparator = struct {
         property: []const u8,
