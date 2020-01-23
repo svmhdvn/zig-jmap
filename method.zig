@@ -27,12 +27,14 @@ pub const standard = struct {
         properties: ?[]const []const u8,
     };
 
-    pub const GetResponse = struct {
-        account_id: types.Id,
-        state: []const u8,
-        list: []const T,
-        not_found: []const types.Id,
-    };
+    pub fn GetResponse(comptime R: type) type {
+        return struct {
+            account_id: types.Id,
+            state: []const u8,
+            list: []const R,
+            not_found: []const types.Id,
+        };
+    }
 
     pub const ChangesRequest = struct {
         account_id: types.Id,
@@ -56,66 +58,74 @@ pub const standard = struct {
         properties: ?[]const []const u8,
     };
 
-    pub const SetRequest = struct {
-        account_id: types.Id,
-        if_in_state: ?[]const u8,
-        create: ?JsonStringMap(T),
+    pub fn SetRequest(comptime R: type) type {
+        return struct {
+            account_id: types.Id,
+            if_in_state: ?[]const u8,
+            create: ?JsonStringMap(R),
 
-        // update is a mapping from Id to PatchObject, which is an arbitrary object based
-        // on the properties of the type it represents.
-        // TODO is this the best way to do this?
-        update: ?json.ObjectMap,
+            // update is a mapping from Id to PatchObject, which is an arbitrary object based
+            // on the properties of the type it represents.
+            // TODO is this the best way to do this?
+            update: ?json.ObjectMap,
 
-        destroy: ?[]const types.Id,
+            destroy: ?[]const types.Id,
 
-        pub fn toJson(self: Self, allocator: *Allocator) !Value {
-            var map = ObjectMap.init(allocator);
-            try map.ensureCapacity(5);
-            _ = map.putAssumeCapacity("accountId", js.toJson(self.account_id, allocator));
-            _ = map.putAssumeCapacity("ifInState", js.toJson(self.if_in_state, allocator));
-            _ = map.putAssumeCapacity("create", js.toJson(self.create, allocator));
-            _ = map.putAssumeCapacity("destroy", js.toJson(self.destroy, allocator));
+            pub fn toJson(self: Self, allocator: *Allocator) !Value {
+                var map = ObjectMap.init(allocator);
+                try map.ensureCapacity(5);
+                _ = map.putAssumeCapacity("accountId", js.toJson(self.account_id, allocator));
+                _ = map.putAssumeCapacity("ifInState", js.toJson(self.if_in_state, allocator));
+                _ = map.putAssumeCapacity("create", js.toJson(self.create, allocator));
+                _ = map.putAssumeCapacity("destroy", js.toJson(self.destroy, allocator));
 
-            const update = if (self.update) |unwrapped|
-                Value{ .Object = unwrapped }
-            else
-                Value{ .Null = {} };
-            _ = map.putAssumeCapacity("update", update);
+                const update = if (self.update) |unwrapped|
+                    Value{ .Object = unwrapped }
+                else
+                    Value{ .Null = {} };
+                _ = map.putAssumeCapacity("update", update);
 
-            return Value{ .Object = map };
-        }
-    };
+                return Value{ .Object = map };
+            }
+        };
+    }
 
-    pub const SetResponse = struct {
-        account_id: types.Id,
-        old_state: ?[]const u8,
-        new_state: []const u8,
-        created: ?JsonStringMap(T),
-        updated: ?JsonStringMap(?T),
-        destroyed: ?[]const types.Id,
-        not_created: ?JsonStringMap(SetError),
-        not_updated: ?JsonStringMap(SetError),
-        not_destroyed: ?JsonStringMap(SetError),
-    };
+    pub fn SetResponse(comptime R: type) type {
+        return struct {
+            account_id: types.Id,
+            old_state: ?[]const u8,
+            new_state: []const u8,
+            created: ?JsonStringMap(R),
+            updated: ?JsonStringMap(?R),
+            destroyed: ?[]const types.Id,
+            not_created: ?JsonStringMap(SetError),
+            not_updated: ?JsonStringMap(SetError),
+            not_destroyed: ?JsonStringMap(SetError),
+        };
+    }
 
-    pub const CopyRequest = struct {
-        from_account_id: types.Id,
-        ifFromInState: ?[]const u8,
-        account_id: types.Id,
-        if_in_state: ?[]const u8,
-        create: JsonStringMap(T),
-        on_success_destroy_original: bool = false,
-        destroy_from_if_in_state: ?[]const u8,
-    };
+    pub fn CopyRequest(comptime R: type) type {
+        return struct {
+            from_account_id: types.Id,
+            ifFromInState: ?[]const u8,
+            account_id: types.Id,
+            if_in_state: ?[]const u8,
+            create: JsonStringMap(R),
+            on_success_destroy_original: bool = false,
+            destroy_from_if_in_state: ?[]const u8,
+        };
+    }
 
-    pub const CopyResponse = struct {
-        from_account_id: types.Id,
-        account_id: types.Id,
-        old_state: ?[]const u8,
-        new_state: []const u8,
-        created: ?JsonStringMap(T),
-        not_created: ?JsonStringMap(SetError),
-    };
+    pub fn CopyResponse(comptime R: type) type {
+        return struct {
+            from_account_id: types.Id,
+            account_id: types.Id,
+            old_state: ?[]const u8,
+            new_state: []const u8,
+            created: ?JsonStringMap(R),
+            not_created: ?JsonStringMap(SetError),
+        };
+    }
 
     pub fn custom_filter(comptime C: type) type {
         return struct {
@@ -131,6 +141,7 @@ pub const standard = struct {
         };
     }
 
+    // TODO add "keyword" field for email objects
     pub const Comparator = struct {
         property: []const u8,
         is_ascending: bool = true,
