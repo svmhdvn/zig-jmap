@@ -5,6 +5,8 @@ const Value = std.json.Value;
 const Array = std.json.Array;
 const ObjectMap = std.json.ObjectMap;
 
+const assert = std.debug.assert;
+
 pub fn JsonStringMap(comptime V: type) type {
     return struct {
         const Self = @This();
@@ -26,6 +28,87 @@ pub fn JsonStringMap(comptime V: type) type {
     };
 }
 
+pub const json_deserializer = struct {
+    fn fromJsonArray(comptime T: type, allocator: *Allocator, arr: Array) !T {
+        const type_info = @typeInfo(T);
+
+        switch (@typeId(T)) {
+            .Pointer => {
+                // TODO figure out if this assumption is correct
+                if (type_info.Pointer.Size != .Slice) {
+                    return error.CannotDeserialize;
+                }
+
+                const Child = type_info.Pointer.child;
+                const result = try allocator.alloc(Child, arr.len);
+                for (result) |*ptr, i| {
+                    const arr_val = arr.at(i);
+                    ptr.* = try fromJson(Child, allocator, arr_val);
+                }
+                return result;
+            },
+
+            .Array => {
+                const Child = type_info.Array.child;
+                if (arr.len != type_info.Array.len) {
+                    return error.CannotDeserialize;
+                }
+                var result: T = undefined;
+                for (result) |*ptr, i| {
+                    const arr_val = arr.at(i);
+                    ptr.* = try fromJson(Child, allocator, arr_val);
+                }
+                return result;
+            },
+
+            else => error.CannotDeserialize,
+        }
+    }
+
+    fn fromJsonObject(comptime T: type, allocator: *Allocator, obj: ObjectMap) !T {
+        const type_info = @typeInfo(T);
+        var result: T = undefined;
+
+        inline for (type_info.Struct.fields) |f| {
+            if (!obj.contains(f.name)) {
+                return error.CannotDeserialize;
+            }
+            const val = obj.getValue(f.name).?;
+            @field(result, f.name) = try fromJson(f.field_type, allocator, val);
+        }
+
+        return result;
+    }
+
+    fn verifyAndReturn(comptime T: type, comptime tag: @TagType(Value), obj: Value) !T {
+        return if (std.meta.activeTag(obj) == tag)
+            @field(obj, @tagName(tag))
+        else
+            error.CannotDeserialize;
+    }
+
+    pub fn fromJson(comptime T: type, allocator: *Allocator, obj: Value) !T {
+        if (T == []const u8) {
+            return try std.mem.dupe(allocator, u8, obj.String);
+        }
+
+        // TODO figure out if I need comptime assertions here
+        // TODO do proper integer range checking to convert from i to u
+        return switch (@typeId(T)) {
+            .Optional => if (std.meta.activeTag(obj) == .Null)
+                null
+            else
+                try fromJson(T.Child, allocator, obj),
+            .Bool => verifyAndReturn(T, .Bool, obj),
+            .Int => verifyAndReturn(T, .Integer, obj),
+            .Float => verifyAndReturn(T, .Float, obj),
+            .Pointer, .Array => try fromJsonArray(T, allocator, obj.Array),
+            .Struct => try fromJsonObject(T, allocator, obj.Object),
+            else => error.CannotDeserialize,
+        };
+    }
+};
+
 pub const json_serializer = struct {
     fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
         var i: usize = 0;
@@ -38,7 +121,7 @@ pub const json_serializer = struct {
                 buf[i] = str[i + off];
             }
         }
-        return buf[0..str.len - off];
+        return buf[0 .. str.len - off];
     }
 
     fn toJsonArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
@@ -183,7 +266,7 @@ pub fn sendRequest(allocator: *Allocator, methods: var) !void {
     };
 
     const request = Request{
-        .using = .{"urn:ietf:params:jmap:core"},
+        .using = &[_][]const u8{"urn:ietf:params:jmap:core"},
         .method_calls = method_calls,
     };
 }
