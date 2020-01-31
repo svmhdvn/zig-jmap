@@ -7,6 +7,35 @@ const ObjectMap = std.json.ObjectMap;
 
 const assert = std.debug.assert;
 
+fn toSnakeCase(str: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    var off: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (std.ascii.isUpper(str[i])) {
+            buf[i + off] = '_';
+            buf[i + off + 1] = std.ascii.toLower(str[i]);
+            off += 1;
+        } else {
+            buf[i + off] = str[i];
+        }
+    }
+    return buf[0 .. str.len + off];
+}
+
+fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    var off: usize = 0;
+    while (i + off < str.len) : (i += 1) {
+        if (str[i + off] == '_') {
+            buf[i] = std.ascii.toUpper(str[i + off + 1]);
+            off += 1;
+        } else {
+            buf[i] = str[i + off];
+        }
+    }
+    return buf[0 .. str.len - off];
+}
+
 pub fn JsonStringMap(comptime V: type) type {
     return struct {
         const Self = @This();
@@ -70,10 +99,12 @@ pub const json_deserializer = struct {
         var result: T = undefined;
 
         inline for (type_info.Struct.fields) |f| {
-            if (!obj.contains(f.name)) {
-                return error.CannotDeserialize;
-            }
-            const val = obj.getValue(f.name).?;
+            const camel_cased = comptime blk: {
+                var buf: [f.name.len]u8 = undefined;
+                break :blk toCamelCase(f.name, buf[0..]);
+            };
+
+            const val = obj.getValue(camel_cased) orelse return error.CannotDeserialize;
             @field(result, f.name) = try fromJson(f.field_type, allocator, val);
         }
 
@@ -90,6 +121,10 @@ pub const json_deserializer = struct {
     pub fn fromJson(comptime T: type, allocator: *Allocator, obj: Value) !T {
         if (T == []const u8) {
             return try std.mem.dupe(allocator, u8, obj.String);
+        }
+
+        if (comptime std.meta.trait.hasFn("fromJson")(T)) {
+            return T.fromJson(allocator, obj);
         }
 
         // TODO figure out if I need comptime assertions here
@@ -110,20 +145,6 @@ pub const json_deserializer = struct {
 };
 
 pub const json_serializer = struct {
-    fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
-        var i: usize = 0;
-        var off: usize = 0;
-        while (i + off < str.len) : (i += 1) {
-            if (str[i + off] == '_') {
-                off += 1;
-                buf[i] = std.ascii.toUpper(str[i + off]);
-            } else {
-                buf[i] = str[i + off];
-            }
-        }
-        return buf[0 .. str.len - off];
-    }
-
     fn toJsonArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
         var arr = try Array.initCapacity(allocator, thing.len);
         for (thing) |el| {

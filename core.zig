@@ -5,6 +5,7 @@ const json = @import("json.zig");
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const js = json.json_serializer;
+const jd = json.json_deserializer;
 
 pub fn Method(comptime RequestType: type, comptime ResponseType: type) type {
     return struct {
@@ -98,16 +99,32 @@ pub const core = struct {
 
     pub fn SetRequest(comptime R: type) type {
         return struct {
+            const Self = @This();
+
             account_id: types.Id,
             if_in_state: ?[]const u8,
             create: ?JsonStringMap(R),
-
             // update is a mapping from Id to PatchObject, which is an arbitrary object based
             // on the properties of the type it represents.
             // TODO is this the best way to do this?
-            update: ?json.ObjectMap,
-
+            update: ?std.json.ObjectMap,
             destroy: ?[]const types.Id,
+
+            pub fn fromJson(allocator: *Allocator, obj: Value) !Self {
+                if (std.meta.activeTag(obj) != .Object) {
+                    return error.CannotDeserialize;
+                }
+
+                var r: Self = undefined;
+
+                const account_id = obj.getValue("accountId") orelse return error.CannotDeserialize;
+                r.account_id = try jd.toJson(@TypeOf(r.account_id), allocator, account_id);
+
+                const if_in_state = obj.getValue("ifInState") orelse return error.CannotDeserialize;
+                r.if_in_state = try jd.toJson(@TypeOf(r.if_in_state), allocator, if_in_state);
+
+                return result;
+            }
 
             pub fn toJson(self: Self, allocator: *Allocator) !Value {
                 var map = ObjectMap.init(allocator);

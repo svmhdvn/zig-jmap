@@ -7,7 +7,6 @@ const Allocator = std.mem.Allocator;
 const Test = struct {
     field1: i64,
     field2: []const []const u8,
-    field3: ?i64,
 };
 
 pub fn main() anyerror!void {
