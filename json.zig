@@ -104,8 +104,13 @@ pub const json_deserializer = struct {
                 break :blk toCamelCase(f.name, buf[0..]);
             };
 
-            const val = obj.getValue(camel_cased) orelse return error.CannotDeserialize;
-            @field(result, f.name) = try fromJson(f.field_type, allocator, val);
+            if (obj.getValue(camel_cased)) |val| {
+                @field(result, f.name) = try fromJson(f.field_type, allocator, val);
+            } else if (@typeId(f.field_type) == .Optional) {
+                @field(result, f.name) = null;
+            } else {
+                return error.CannotDeserialize;
+            }
         }
 
         return result;
