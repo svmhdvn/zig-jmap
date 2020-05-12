@@ -277,19 +277,16 @@ const ResultReference = struct {
 
 // TODO remove hardcoded "using" capability
 pub fn sendRequest(allocator: *Allocator, methods: var) !void {
-    const method_calls = blk: {
-        var method_calls: []Invocation = try allocator.alloc(Invocation, methods.len);
-        for (methods) |method, i| {
-            // TODO figure out how to generate the name of the method call
-            // TODO figure out id generation
-            method_calls[i] = Invocation{
-                .name = "Core/echo",
-                .arguments = method.toJson(allocator),
-                .method_call_id = "LOL",
-            };
-        }
-        break :blk method_calls;
-    };
+    var method_calls: []Invocation = try allocator.alloc(Invocation, methods.len);
+    for (methods) |method, i| {
+        // TODO figure out how to generate the name of the method call
+        // TODO figure out id generation
+        method_calls[i] = Invocation{
+            .name = "Core/echo",
+            .arguments = method.toJson(allocator),
+            .method_call_id = "LOL",
+        };
+    }
 
     const request = Request{
         .using = &[_][]const u8{"urn:ietf:params:jmap:core"},
