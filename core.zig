@@ -45,12 +45,10 @@ pub const core = struct {
         /// or destroy in a single /set type method call.
         max_objects_in_set: types.UnsignedInt = 500,
 
-        // TODO figure this one out
-
         /// A list of identifiers for algorithms registered in the collation
         /// registry, as defined in RFC 4790, that the server supports for
         /// sorting when querying records.
-        collation_algorithms: []const u8,
+        collation_algorithms: []const []const u8,
     };
 
     pub const Get = Method(GetRequest, GetResponse);

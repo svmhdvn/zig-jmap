@@ -1,4 +1,4 @@
-const types = @import("types");
+const types = @import("types.zig");
 
 const jmap_error = struct {
     request_level: struct {
