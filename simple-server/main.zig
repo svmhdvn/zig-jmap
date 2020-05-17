@@ -38,10 +38,6 @@ const SessionGetRequest = struct {
             .state = state,
         };
     }
-
-    // TODO add the allocator here
-    fn initSession(req: SessionGetRequest) Session {
-    }
 };
 
 var cred_db: StoS = undefined;
@@ -56,6 +52,7 @@ var cred_db: StoS = undefined;
 fn handleJson(allocator: *Allocator, msg: []const u8, parser: *Parser) !void {
     parser.reset();
     const tree = try parser.parse(msg);
+    // TODO return error on an invalid request format
     assert(std.meta.activeTag(tree.root) == .Array);
     const arr = tree.root.Array;
 

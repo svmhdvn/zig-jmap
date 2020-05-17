@@ -36,6 +36,8 @@ fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
     return buf[0 .. str.len - off];
 }
 
+// TODO I don't think we need this data type? Can't we just copy the given
+// object map directly?
 pub fn JsonStringMap(comptime V: type) type {
     return struct {
         const Self = @This();
@@ -117,33 +119,43 @@ pub const json_deserializer = struct {
     }
 
     fn verifyAndReturn(comptime T: type, comptime tag: @TagType(Value), obj: Value) !T {
-        return if (std.meta.activeTag(obj) == tag)
+        return if (obj == tag)
             @field(obj, @tagName(tag))
         else
             error.CannotDeserialize;
     }
 
-    pub fn fromJson(comptime T: type, allocator: *Allocator, obj: Value) !T {
+    pub fn fromJson(comptime T: type, allocator: *Allocator, val: Value) !T {
         if (T == []const u8) {
-            return try std.mem.dupe(allocator, u8, obj.String);
-        }
-
-        if (comptime std.meta.trait.hasFn("fromJson")(T)) {
-            return T.fromJson(allocator, obj);
+            if (val != .String) return error.CannotDeserialize;
+            return std.mem.dupe(allocator, u8, val.String);
         }
 
         // TODO figure out if I need comptime assertions here
         // TODO do proper integer range checking to convert from i to u
-        return switch (@typeId(T)) {
-            .Optional => if (std.meta.activeTag(obj) == .Null)
+        // TODO clean this up to reduce duplicate "return error" code
+        return switch (@typeInfo(T)) {
+            .Bool => verifyAndReturn(T, .Bool, val),
+            .Int => verifyAndReturn(T, .Integer, val),
+            .Float => verifyAndReturn(T, .Float, val),
+
+            .Pointer, .Array => if (val != .Array)
+                error.CannotDeserialize
+            else
+                fromJsonArray(T, allocator, val.Array),
+
+            .Optional => if (val == .Null)
                 null
             else
-                try fromJson(T.Child, allocator, obj),
-            .Bool => verifyAndReturn(T, .Bool, obj),
-            .Int => verifyAndReturn(T, .Integer, obj),
-            .Float => verifyAndReturn(T, .Float, obj),
-            .Pointer, .Array => try fromJsonArray(T, allocator, obj.Array),
-            .Struct => try fromJsonObject(T, allocator, obj.Object),
+                try fromJson(T.Child, allocator, val),
+
+            .Struct => if (val != .Object)
+                error.CannotDeserialize;
+            else if (comptime std.meta.trait.hasFn("fromJson")(T))
+                T.fromJson(allocator, obj.Object)
+            else
+                fromJsonObject(T, allocator, obj.Object),
+
             else => error.CannotDeserialize,
         };
     }

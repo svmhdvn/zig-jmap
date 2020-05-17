@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const json = @import("json.zig");
 
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const js = json.json_serializer;
@@ -57,6 +58,23 @@ pub const core = struct {
     pub const Copy = Method(CopyRequest, CopyResponse);
     pub const Query = Method(QueryRequest, QueryResponse);
     pub const QueryChanges = Method(QueryChangesRequest, QueryChangesResponse);
+
+    // TODO see if we can remove the memory copies in fromJson and toJson
+    pub const CoreEchoRequest = struct {
+        args: std.json.ObjectMap,
+
+        pub fn fromJson(allocator: *Allocator, obj: Value) !CoreEchoRequest {
+            if (obj != .Object) return error.CannotDeserialize;
+            return .{ .args = std.mem.dupe(allocator, Value, obj) };
+        }
+
+        pub fn toJson(self: CoreEchoRequest, allocator: *Allocator) !Value {
+            return std.mem.dupe(allocator, Value, self.args);
+        }
+
+        pub fn handle(req: CoreEchoRequest) 
+
+    };
 
     pub const GetRequest = struct {
         account_id: types.Id,
