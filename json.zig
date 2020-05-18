@@ -4,37 +4,60 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const Array = std.json.Array;
 const ObjectMap = std.json.ObjectMap;
-
 const assert = std.debug.assert;
 
-fn toSnakeCase(str: []const u8, buf: []u8) []const u8 {
-    var i: usize = 0;
-    var off: usize = 0;
-    while (i < str.len) : (i += 1) {
-        if (std.ascii.isUpper(str[i])) {
-            buf[i + off] = '_';
-            buf[i + off + 1] = std.ascii.toLower(str[i]);
-            off += 1;
-        } else {
-            buf[i + off] = str[i];
-        }
+// TODO determine whether memory copies are needed here. For now, assume that
+// they are unnecessary.
+/// Serializes `obj` into a JSON `Value`.
+pub fn serialize(allocator: *Allocator, obj: var) Allocator.Error!Value {
+    const T = @TypeOf(obj);
+
+    // If the object defines its own custom serialization function, use it as an
+    // override. Note that we can't simply check it in the `Struct` case below
+    // because we may define `toJson` on enums [RFC 8620 5.5].
+    if (comptime std.meta.trait.hasFn("toJson")(T)) {
+        return T.toJson(allocator, obj);
     }
-    return buf[0 .. str.len + off];
+
+    const type_info = @typeInfo(T);
+    return switch (type_info) {
+        .Array => .{ .Array = try serializeArray(allocator, obj) },
+        .Bool => .{ .Bool = obj },
+        // TODO camelCase enum value string
+        .Enum => .{ .String = @tagName(obj) },
+        .Float, .ComptimeFloat => .{ .Float = obj },
+        .Int, .ComptimeInt => .{ .Integer = @intCast(i64, obj) },
+
+        .Optional => if (obj) |val| serialize(allocator, val) else .Null,
+
+        .Pointer => |p| if (p.child == u8)
+            .{ .String = obj }
+        else switch (p.size) {
+            .One => serialize(allocator, thing.*),
+            .Many, .Slice => .{ .Array = try serializeArray(allocator, thing) },
+            else => .Null
+        },
+
+        .Struct => .{ .Object = try serializeStruct(allocator, obj) },
+
+        // We have no reason to be using bare unions, so we don't handle that
+        // case here.
+        .Union => |u| blk: {
+            //const tag_int = @enumToInt(std.meta.activeTag(thing));
+            //inline for (u.fields) |field| {
+            //    if (tag_int == field.enum_field.?.value) {
+            //        break :blk toJson(@field(thing, field.name), allocator);
+            //    }
+            //}
+            //unreachable;
+            break :blk serialize(allocator, @field(obj, @tagName(obj)));
+        },
+        // TODO figure out if we should rather return an error here.
+        else => .Null,
+    };
 }
 
-fn toCamelCase(str: []const u8, buf: []u8) []const u8 {
-    var i: usize = 0;
-    var off: usize = 0;
-    while (i + off < str.len) : (i += 1) {
-        if (str[i + off] == '_') {
-            buf[i] = std.ascii.toUpper(str[i + off + 1]);
-            off += 1;
-        } else {
-            buf[i] = str[i + off];
-        }
-    }
-    return buf[0 .. str.len - off];
-}
+
 
 // TODO I don't think we need this data type? Can't we just copy the given
 // object map directly?
@@ -59,249 +82,173 @@ pub fn JsonStringMap(comptime V: type) type {
     };
 }
 
-pub const json_deserializer = struct {
-    fn fromJsonArray(comptime T: type, allocator: *Allocator, arr: Array) !T {
-        const type_info = @typeInfo(T);
+fn fromJsonArray(comptime T: type, allocator: *Allocator, arr: Array) !T {
+    const type_info = @typeInfo(T);
 
-        switch (@typeId(T)) {
-            .Pointer => {
-                // TODO figure out if this assumption is correct
-                if (type_info.Pointer.Size != .Slice) {
-                    return error.CannotDeserialize;
-                }
-
-                const Child = type_info.Pointer.child;
-                const result = try allocator.alloc(Child, arr.len);
-                for (result) |*ptr, i| {
-                    const arr_val = arr.at(i);
-                    ptr.* = try fromJson(Child, allocator, arr_val);
-                }
-                return result;
-            },
-
-            .Array => {
-                const Child = type_info.Array.child;
-                if (arr.len != type_info.Array.len) {
-                    return error.CannotDeserialize;
-                }
-                var result: T = undefined;
-                for (result) |*ptr, i| {
-                    const arr_val = arr.at(i);
-                    ptr.* = try fromJson(Child, allocator, arr_val);
-                }
-                return result;
-            },
-
-            else => error.CannotDeserialize,
-        }
-    }
-
-    fn fromJsonObject(comptime T: type, allocator: *Allocator, obj: ObjectMap) !T {
-        const type_info = @typeInfo(T);
-        var result: T = undefined;
-
-        inline for (type_info.Struct.fields) |f| {
-            const camel_cased = comptime blk: {
-                var buf: [f.name.len]u8 = undefined;
-                break :blk toCamelCase(f.name, buf[0..]);
-            };
-
-            if (obj.getValue(camel_cased)) |val| {
-                @field(result, f.name) = try fromJson(f.field_type, allocator, val);
-            } else if (@typeId(f.field_type) == .Optional) {
-                @field(result, f.name) = null;
-            } else {
+    switch (@typeId(T)) {
+        .Pointer => {
+            // TODO figure out if this assumption is correct
+            if (type_info.Pointer.Size != .Slice) {
                 return error.CannotDeserialize;
             }
-        }
 
-        return result;
+            const Child = type_info.Pointer.child;
+            const result = try allocator.alloc(Child, arr.len);
+            for (result) |*ptr, i| {
+                const arr_val = arr.at(i);
+                ptr.* = try fromJson(Child, allocator, arr_val);
+            }
+            return result;
+        },
+
+        .Array => {
+            const Child = type_info.Array.child;
+            if (arr.len != type_info.Array.len) {
+                return error.CannotDeserialize;
+            }
+            var result: T = undefined;
+            for (result) |*ptr, i| {
+                const arr_val = arr.at(i);
+                ptr.* = try fromJson(Child, allocator, arr_val);
+            }
+            return result;
+        },
+
+        else => error.CannotDeserialize,
+    }
+}
+
+fn fromJsonObject(comptime T: type, allocator: *Allocator, obj: ObjectMap) !T {
+    const type_info = @typeInfo(T);
+    var result: T = undefined;
+
+    inline for (type_info.Struct.fields) |f| {
+        const camel_cased = comptime blk: {
+            var buf: [f.name.len]u8 = undefined;
+            break :blk snakeToCamel(f.name, buf[0..]);
+        };
+
+        if (obj.getValue(camel_cased)) |val| {
+            @field(result, f.name) = try fromJson(f.field_type, allocator, val);
+        } else if (@typeId(f.field_type) == .Optional) {
+            @field(result, f.name) = null;
+        } else {
+            return error.CannotDeserialize;
+        }
     }
 
-    fn verifyAndReturn(comptime T: type, comptime tag: @TagType(Value), obj: Value) !T {
-        return if (obj == tag)
-            @field(obj, @tagName(tag))
+    return result;
+}
+
+fn verifyAndReturn(comptime T: type, comptime tag: @TagType(Value), obj: Value) !T {
+    return if (obj == tag)
+        @field(obj, @tagName(tag))
+    else
+        error.CannotDeserialize;
+}
+
+pub fn fromJson(comptime T: type, allocator: *Allocator, val: Value) !T {
+    if (T == []const u8) {
+        if (val != .String) return error.CannotDeserialize;
+        return std.mem.dupe(allocator, u8, val.String);
+    }
+
+    // TODO figure out if I need comptime assertions here
+    // TODO do proper integer range checking to convert from i to u
+    // TODO clean this up to reduce duplicate "return error" code
+    return switch (@typeInfo(T)) {
+        .Bool => verifyAndReturn(T, .Bool, val),
+        .Int => verifyAndReturn(T, .Integer, val),
+        .Float => verifyAndReturn(T, .Float, val),
+
+        .Pointer, .Array => if (val != .Array)
+            error.CannotDeserialize
         else
+            fromJsonArray(T, allocator, val.Array),
+
+        .Optional => if (val == .Null)
+            null
+        else
+            try fromJson(T.Child, allocator, val),
+
+        .Struct => if (val != .Object)
             error.CannotDeserialize;
-    }
+        else if (comptime std.meta.trait.hasFn("fromJson")(T))
+            T.fromJson(allocator, obj.Object)
+        else
+            fromJsonObject(T, allocator, obj.Object),
 
-    pub fn fromJson(comptime T: type, allocator: *Allocator, val: Value) !T {
-        if (T == []const u8) {
-            if (val != .String) return error.CannotDeserialize;
-            return std.mem.dupe(allocator, u8, val.String);
-        }
-
-        // TODO figure out if I need comptime assertions here
-        // TODO do proper integer range checking to convert from i to u
-        // TODO clean this up to reduce duplicate "return error" code
-        return switch (@typeInfo(T)) {
-            .Bool => verifyAndReturn(T, .Bool, val),
-            .Int => verifyAndReturn(T, .Integer, val),
-            .Float => verifyAndReturn(T, .Float, val),
-
-            .Pointer, .Array => if (val != .Array)
-                error.CannotDeserialize
-            else
-                fromJsonArray(T, allocator, val.Array),
-
-            .Optional => if (val == .Null)
-                null
-            else
-                try fromJson(T.Child, allocator, val),
-
-            .Struct => if (val != .Object)
-                error.CannotDeserialize;
-            else if (comptime std.meta.trait.hasFn("fromJson")(T))
-                T.fromJson(allocator, obj.Object)
-            else
-                fromJsonObject(T, allocator, obj.Object),
-
-            else => error.CannotDeserialize,
-        };
-    }
-};
-
-pub const json_serializer = struct {
-    fn toJsonArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
-        var arr = try Array.initCapacity(allocator, thing.len);
-        for (thing) |el| {
-            arr.appendAssumeCapacity(try toJson(el, allocator));
-        }
-        return arr;
-    }
-
-    pub fn toJson(thing: var, allocator: *Allocator) Allocator.Error!Value {
-        const T = @TypeOf(thing);
-        if (T == Value) {
-            return thing;
-        }
-
-        if (comptime std.meta.trait.hasFn("toJson")(T)) {
-            return T.toJson(thing, allocator);
-        }
-
-        const type_info = @typeInfo(T);
-        return switch (type_info) {
-            .Array => Value{ .Array = try toJsonArray(thing, allocator) },
-            .Bool => Value{ .Bool = thing },
-            // TODO camelCase enum value string
-            .Enum => Value{ .String = @tagName(thing) },
-            .Float, .ComptimeFloat => Value{ .Float = thing },
-            .Int, .ComptimeInt => Value{ .Integer = @intCast(i64, thing) },
-            .Optional => if (thing) |thing_unwrapped|
-                toJson(thing_unwrapped, allocator)
-            else
-                Value{ .Null = {} },
-            .Pointer => |p| if (p.child == u8)
-                Value{ .String = thing }
-            else switch (p.size) {
-                .One => toJson(thing.*, allocator),
-                .Many, .Slice => Value{ .Array = try toJsonArray(thing, allocator) },
-                else => Value{ .Null = {} },
-            },
-            .Struct => |s| blk: {
-                var map = ObjectMap.init(allocator);
-                try map.ensureCapacity(s.fields.len);
-                inline for (s.fields) |field| {
-                    const name = field.name;
-                    const camel_cased = comptime blk: {
-                        var buf: [name.len]u8 = undefined;
-                        break :blk toCamelCase(name, buf[0..]);
-                    };
-
-                    const serialized_field = try toJson(@field(thing, name), allocator);
-                    _ = map.putAssumeCapacity(camel_cased, serialized_field);
-                }
-                break :blk Value{ .Object = map };
-            },
-            // TODO figure out what to do about untagged bare unions
-            .Union => |u| blk: {
-                const tag_int = @enumToInt(std.meta.activeTag(thing));
-                inline for (u.fields) |field| {
-                    if (tag_int == field.enum_field.?.value) {
-                        break :blk toJson(@field(thing, field.name), allocator);
-                    }
-                }
-                unreachable;
-            },
-            else => Value.Null,
-        };
-    }
-};
-
-const Invocation = struct {
-    const Self = @This();
-
-    /// Name of the method to call or of the response.
-    name: []const u8,
-
-    arguments: ObjectMap,
-
-    /// An arbitrary string from the client to be echoed back with the
-    /// responses emitted by that method call.
-    method_call_id: []const u8,
-
-    pub fn toJson(self: Self, allocator: *Allocator) !Value {
-        var arr = try Array.initCapacity(allocator, 3);
-        arr.appendAssumeCapacity(Value{ .String = self.name });
-        arr.appendAssumeCapacity(Value{ .Object = self.arguments });
-        arr.appendAssumeCapacity(Value{ .String = self.method_call_id });
-        return Value{ .Array = arr };
-    }
-};
-
-const Request = struct {
-    /// The set of capabilities the client wishes to use.
-    using: []const []const u8,
-
-    /// An array of method calls to process on the server.
-    method_calls: []const Invocation,
-
-    /// A map of a (client-specified) creation id to the id the server assigned
-    /// when a record was successfully created.
-    created_ids: ?std.AutoHashMap(types.Id, types.Id),
-};
-
-const Response = struct {
-    /// An array of responses, in the same format as the "methodCalls" on the
-    /// Request object.
-    method_responses: []const Invocation,
-
-    /// A map of a (client-specified) creation id to the id the server assigned
-    /// when a record was successfully created.
-    created_ids: ?std.AutoHashMap(types.Id, types.Id),
-
-    /// The current value of the "state" string on the Session object.
-    session_state: []const u8,
-};
-
-const ResultReference = struct {
-    /// The method call id of a previous method call in the current request.
-    result_of: []const u8,
-
-    /// The required name of a response to that method call.
-    name: []const u8,
-
-    /// A pointer into the arguments of the response selected via the name and
-    /// resultOf properties.
-    path: []const u8,
-};
-
-// TODO remove hardcoded "using" capability
-pub fn sendRequest(allocator: *Allocator, methods: var) !void {
-    var method_calls: []Invocation = try allocator.alloc(Invocation, methods.len);
-    for (methods) |method, i| {
-        // TODO figure out how to generate the name of the method call
-        // TODO figure out id generation
-        method_calls[i] = Invocation{
-            .name = "Core/echo",
-            .arguments = method.toJson(allocator),
-            .method_call_id = "LOL",
-        };
-    }
-
-    const request = Request{
-        .using = &[_][]const u8{"urn:ietf:params:jmap:core"},
-        .method_calls = method_calls,
+        else => error.CannotDeserialize,
     };
 }
+
+fn serializeStruct(allocator: *Allocator, obj: var) Allocator.Error!ObjectMap {
+    const T = @Type(obj);
+    // If `obj` is already a JSON value, we're done.
+    if (T == Value) {
+        return obj;
+    }
+    
+    // If `obj` is a JSON object, just wrap it up into a JSON value.
+    if (T == ObjectMap) {
+        return .{ .Object = obj };
+    }
+
+    // We do not handle the `Array` case of `Value` because we expect it
+    // to never end up in our code. If it somehow did, why wouldn't we
+    // simply use a regular slice?
+
+    var map = ObjectMap.init(allocator);
+    try map.ensureCapacity(s.fields.len);
+    inline for (s.fields) |field| {
+        const name = field.name;
+        const camel_cased = comptime blk: {
+            var buf: [name.len]u8 = undefined;
+            break :blk snakeToCamel(name, buf[0..]);
+        };
+
+        const field_json = try serialize(allocator, @field(obj, name));
+        _ = map.putAssumeCapacity(camel_cased, field_json);
+    }
+
+}
+
+fn serializeArray(thing: var, allocator: *Allocator) Allocator.Error!Array {
+    var arr = try Array.initCapacity(allocator, thing.len);
+    for (thing) |el| {
+        arr.appendAssumeCapacity(try toJson(el, allocator));
+    }
+    return arr;
+}
+
+// TODO write tests for snake case and camel case
+/// Converts `str` from camel
+fn camelToSnake(str: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    var off: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (std.ascii.isUpper(str[i])) {
+            buf[i + off] = '_';
+            buf[i + off + 1] = std.ascii.toLower(str[i]);
+            off += 1;
+        } else {
+            buf[i + off] = str[i];
+        }
+    }
+    return buf[0 .. str.len + off];
+}
+
+fn snakeToCamel(str: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    var off: usize = 0;
+    while (i + off < str.len) : (i += 1) {
+        if (str[i + off] == '_') {
+            buf[i] = std.ascii.toUpper(str[i + off + 1]);
+            off += 1;
+        } else {
+            buf[i] = str[i + off];
+        }
+    }
+    return buf[0 .. str.len - off];
+}
+
