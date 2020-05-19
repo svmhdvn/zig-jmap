@@ -1,8 +1,6 @@
 const std = @import("std");
 
 const Invocation = struct {
-    const Self = @This();
-
     /// Name of the method to call or of the response.
     name: []const u8,
 
@@ -12,12 +10,12 @@ const Invocation = struct {
     /// responses emitted by that method call.
     method_call_id: []const u8,
 
-    pub fn toJson(self: Self, allocator: *Allocator) !Value {
+    pub fn toJson(allocator: *Allocator, obj: Invocation) !Value {
         var arr = try Array.initCapacity(allocator, 3);
-        arr.appendAssumeCapacity(Value{ .String = self.name });
-        arr.appendAssumeCapacity(Value{ .Object = self.arguments });
-        arr.appendAssumeCapacity(Value{ .String = self.method_call_id });
-        return Value{ .Array = arr };
+        arr.appendAssumeCapacity(.{ .String = obj.name });
+        arr.appendAssumeCapacity(.{ .Object = obj.arguments });
+        arr.appendAssumeCapacity(.{ .String = obj.method_call_id });
+        return .{ .Array = arr };
     }
 };
 
