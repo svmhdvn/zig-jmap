@@ -1,3 +1,12 @@
+/// Custom JSON (de)serializer functions. List of unsupported data types:
+/// - Union: handling generic unions would require backtracking in the parser
+/// - Enum: this can be accomodated fairly easily, but it requires iterating
+/// through all the possible field names in the enum and string-comparing each one
+/// against the value in the JSON object. This is a little cumbersome and
+/// unnecessary since we have `{to,from}Json` custom methods to use.
+/// - Non-slice pointers: JSON objects have no support for pointing to memory,
+/// so we only care about slices so that we can work with JSON arrays.
+
 const std = @import("std");
 const types = @import("types");
 const Allocator = std.mem.Allocator;
@@ -67,26 +76,12 @@ pub fn serialize(allocator: *Allocator, obj: var) Allocator.Error!Value {
     return switch (type_info) {
         .Array => .{ .Array = try serializeList(allocator, obj) },
         .Bool => .{ .Bool = obj },
-        // TODO camelCase enum value string
-        .Enum => .{ .String = @tagName(obj) },
-        .Float, .ComptimeFloat => .{ .Float = obj },
-        .Int, .ComptimeInt => .{ .Integer = @intCast(i64, obj) },
+        .Float => .{ .Float = obj },
+        .Int => .{ .Integer = @intCast(i64, obj) },
         .Optional => if (obj) |val| serialize(allocator, val) else .Null,
         .Pointer => |p| serializePointer(allocator, obj, p),
         .Struct => .{ .Object = try serializeStruct(allocator, obj) },
 
-        // We have no reason to be using bare unions, so we don't handle that
-        // case here.
-        .Union => |u| blk: {
-            //const tag_int = @enumToInt(std.meta.activeTag(thing));
-            //inline for (u.fields) |field| {
-            //    if (tag_int == field.enum_field.?.value) {
-            //        break :blk toJson(@field(thing, field.name), allocator);
-            //    }
-            //}
-            //unreachable;
-            break :blk serialize(allocator, @field(obj, @tagName(obj)));
-        },
         // TODO figure out if we should rather return an error here.
         else => .Null,
     };
@@ -94,41 +89,30 @@ pub fn serialize(allocator: *Allocator, obj: var) Allocator.Error!Value {
 
 
 pub fn deserialize(allocator: *Allocator, val: Value, comptime T: type) !T {
-    if (T == []const u8) {
-        if (val != .String) return error.CannotDeserialize;
-        return std.mem.dupe(allocator, u8, val.String);
-    }
 
     if (comptime std.meta.trait.hasFn("fromJson")(T))
         return T.fromJson(allocator, val)
 
+    // We will not support unions here because they are inefficient to handle in
+    // the generic case. Rather, we handle them through custom `fromJson`
+    // methods in the union definition. We also do not support single-item
+    // pointers because JSON has no concept of pointing to memory.
     // TODO figure out if I need comptime assertions here
     // TODO do proper integer range checking to convert from i to u
     // TODO clean this up to reduce duplicate "return error" code
-    // TODO add handling of unions. The reason why it's omitted for now is
-    // because handling generic unions require "backtracking", whereas it's
-    // probably just easier to implement a custom fromJson function on the union
-    // type in an efficient manner.
     return switch (@typeInfo(T)) {
+        .Array => |a| deserializeArray(allocator, val, T, a),
         .Bool => if (val == .Bool) val.Bool else error.CannotDeserialize,
-        .Int => if (val == .Integer) val.Integer else error.CannotDeserialize,
         .Float => if (val == .Float) val.Float else error.CannotDeserialize,
-
-        .Pointer, .Array => if (val != .Array)
-            error.CannotDeserialize
-        else
-            fromJsonArray(T, allocator, val.Array),
+        .Int => if (val == .Integer) val.Integer else error.CannotDeserialize,
 
         .Optional => if (val == .Null)
             null
         else
-            try fromJson(T.Child, allocator, val),
+            deserialize(allocator, val, T.Child),
 
-        .Struct => if (val != .Object)
-            error.CannotDeserialize;
-        else 
-        else
-            fromJsonObject(T, allocator, obj.Object),
+        .Pointer => |p| deserializePointer(allocator, val, T, p),
+        .Struct => |s| deserializeObject(allocator, val, T, s),
 
         else => error.CannotDeserialize,
     };
@@ -229,22 +213,18 @@ fn snakeToCamel(str: []const u8, buf: []u8) []const u8 {
     return buf[0 .. str.len - off];
 }
 
-fn verifyAndReturn(comptime T: type, comptime tag: @TagType(Value), obj: Value) !T {
-    return if (obj == tag)
-        @field(obj, @tagName(tag))
-    else
-        error.CannotDeserialize;
-}
-
+// TODO decide what is the correct thing to do when there is a field in the JSON
+// object that is not a field in the struct. Do we return an error or just
+// silently ignore that value?
 fn deserializeObject(
     allocator: *Allocator,
     obj: ObjectMap,
     comptime T: type,
+    struct_info: builtin.TypeInfo.Struct,
 ) !T {
-    const type_info = @typeInfo(T);
     var result: T = undefined;
 
-    inline for (type_info.Struct.fields) |f| {
+    inline for (struct_info.fields) |f| {
         const camel_cased = comptime blk: {
             var buf: [f.name.len]u8 = undefined;
             break :blk snakeToCamel(f.name, buf[0..]);
@@ -252,7 +232,7 @@ fn deserializeObject(
 
         if (obj.getValue(camel_cased)) |val| {
             @field(result, f.name) = try fromJson(f.field_type, allocator, val);
-        } else if (@typeId(f.field_type) == .Optional) {
+        } else if (@typeInfo(f.field_type) == .Optional) {
             @field(result, f.name) = null;
         } else {
             return error.CannotDeserialize;
@@ -262,39 +242,52 @@ fn deserializeObject(
     return result;
 }
 
-fn deserializeArray(allocator: *Allocator, arr: Array, comptime T: type) !T {
-    const type_info = @typeInfo(T);
+// TODO see if it's cleaner code to combine these two functions into one.
 
-    switch (type_info) {
-        .Pointer => {
-            // TODO figure out if this assumption is correct
-            if (type_info.Pointer.Size != .Slice) {
-                return error.CannotDeserialize;
-            }
+// Only supports slices, because as I see it, there's no reason to support any
+// other type of pointer.
+fn deserializePointer(
+    allocator: *Allocator,
+    val: Value,
+    comptime T: type,
+    ptr_info: builtin.TypeInfo.Pointer,
+) !T {
+    if (ptr_info.size != .Slice)
+        return error.CannotDeserialize;
 
-            const Child = type_info.Pointer.child;
-            const result = try allocator.alloc(Child, arr.len);
-            for (result) |*ptr, i| {
-                const arr_val = arr.at(i);
-                ptr.* = try fromJson(Child, allocator, arr_val);
-            }
-            return result;
-        },
-
-        .Array => {
-            const Child = type_info.Array.child;
-            if (arr.len != type_info.Array.len) {
-                return error.CannotDeserialize;
-            }
-            var result: T = undefined;
-            for (result) |*ptr, i| {
-                const arr_val = arr.at(i);
-                ptr.* = try fromJson(Child, allocator, arr_val);
-            }
-            return result;
-        },
-
-        else => error.CannotDeserialize,
+    if (ptr_info.Child == u8) {
+        if (val != .String) return error.CannotDeserialize;
+        return std.mem.dupe(allocator, u8, val.String);
     }
+
+    var result = try allocator.alloc(ptr_info.Child, val.Array.len);
+    for (val.Array.span()) |item, i| {
+        result[i] = try deserialize(allocator, item, ptr_info.Child);
+    }
+    return result;
+}
+
+fn deserializeArray(
+    allocator: *Allocator,
+    val: Value,
+    comptime T: type,
+    arr_info: builtin.TypeInfo.Array,
+) !T {
+    var result: T = undefined;
+
+    if (arr_info.Child == u8) {
+        if (val != .String or val.String.len != arr_info.len)
+            return error.CannotDeserialize;
+        std.mem.copy(u8, result, val.String);
+        return result;
+    }
+        
+    if (val != .Array or arr_info.len != val.Array.len)
+        return error.CannotDeserialize;
+
+    for (val.Array.span()) |item, i| {
+        result[i] = try deserialize(allocator, item, arr_info.Child);
+    }
+    return result;
 }
 
