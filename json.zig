@@ -24,7 +24,7 @@ pub fn JsonStringMap(comptime V: type) type {
         const Self = @This();
 
         /// Caller owns memory of returned Value.
-        pub fn toJson(allocator: *Allocator, obj: Self) Allocator.Error!Value {
+        pub fn toJson(allocator: *Allocator, obj: Self) !Value {
             var map = ObjectMap.init(allocator);
             try map.ensureCapacity(obj.map.count());
 
@@ -62,7 +62,7 @@ pub fn JsonStringMap(comptime V: type) type {
 // TODO ensure that ints and floats fit within 64 bits, otherwise return an
 // error.CannotSerialize or something
 /// Serializes `obj` into a JSON `Value`.
-pub fn serialize(allocator: *Allocator, obj: var) Allocator.Error!Value {
+pub fn serialize(allocator: *Allocator, obj: var) !Value {
     const T = @TypeOf(obj);
 
     // If the object defines its own custom serialization function, use it as an
@@ -72,24 +72,20 @@ pub fn serialize(allocator: *Allocator, obj: var) Allocator.Error!Value {
         return T.toJson(allocator, obj);
     }
 
-    const type_info = @typeInfo(T);
-    return switch (type_info) {
+    return switch (@typeInfo(T)) {
         .Array => .{ .Array = try serializeList(allocator, obj) },
         .Bool => .{ .Bool = obj },
         .Float => .{ .Float = obj },
         .Int => .{ .Integer = @intCast(i64, obj) },
         .Optional => if (obj) |val| serialize(allocator, val) else .Null,
         .Pointer => |p| serializePointer(allocator, obj, p),
-        .Struct => .{ .Object = try serializeStruct(allocator, obj) },
-
-        // TODO figure out if we should rather return an error here.
-        else => .Null,
+        .Struct => |s| serializeStruct(allocator, obj, T, s),
+        else => error.CannotSerialize;
     };
 }
 
 
 pub fn deserialize(allocator: *Allocator, val: Value, comptime T: type) !T {
-
     if (comptime std.meta.trait.hasFn("fromJson")(T))
         return T.fromJson(allocator, val)
 
@@ -112,14 +108,20 @@ pub fn deserialize(allocator: *Allocator, val: Value, comptime T: type) !T {
             deserialize(allocator, val, T.Child),
 
         .Pointer => |p| deserializePointer(allocator, val, T, p),
-        .Struct => |s| deserializeObject(allocator, val, T, s),
+        .Struct => |s| deserializeStruct(allocator, val, T, s),
 
         else => error.CannotDeserialize,
     };
 }
 
-fn serializeStruct(allocator: *Allocator, obj: var) Allocator.Error!ObjectMap {
-    const T = @Type(obj);
+fn serializeStruct(
+    allocator: *Allocator,
+    obj: var,
+    comptime T: type,
+    struct_info: builtin.TypeInfo.Struct,
+) !Value {
+    const T = @TypeOf(obj);
+
     // If `obj` is already a JSON value, we're done.
     if (T == Value) {
         return obj;
@@ -147,6 +149,7 @@ fn serializeStruct(allocator: *Allocator, obj: var) Allocator.Error!ObjectMap {
         _ = map.putAssumeCapacity(camel_cased, field_json);
     }
 
+    return .{ .Object = map };
 }
 
 // TODO maybe return an error if we encounter a C pointer (look at
@@ -158,26 +161,22 @@ fn serializePointer(
     allocator: *Allocator,
     ptr: var,
     ptr_info: builtin.TypeInfo.Pointer
-) Allocator.Error!Value {
-    return switch (ptr_info.size) {
-        .One => serialize(allocator, ptr.*),
-
-        .Many, .Slice => if (p.child == u8)
-            .{ .String = ptr },
-        else
-            .{ .Array = try serializeList(allocator, ptr) },
-
-        else => .Null
-    }
+) !Value {
+    return if (ptr_info.size != .Slice)
+        error.CannotSerialize;
+    else if (ptr_info.Child == u8)
+        .{ .String = ptr }
+    else
+        .{ .Array = try serializeList(allocator, ptr) };
 }
 
 /// Serializes `arr` (either a slice or an array) to a JSON `Array`.
 /// This function is named serializedList due to the fact that it accepts any
 /// iterable object.
-fn serializeList(allocator: *Allocator, list: var) Allocator.Error!Array {
+fn serializeList(allocator: *Allocator, list: var) !Array {
     var arr = try Array.initCapacity(allocator, list.len);
     for (list) |el| {
-        arr.appendAssumeCapacity(try serialize(allocator, list));
+        arr.appendAssumeCapacity(try serialize(allocator, el));
     }
     return arr;
 }
@@ -216,7 +215,7 @@ fn snakeToCamel(str: []const u8, buf: []u8) []const u8 {
 // TODO decide what is the correct thing to do when there is a field in the JSON
 // object that is not a field in the struct. Do we return an error or just
 // silently ignore that value?
-fn deserializeObject(
+fn deserializeStruct(
     allocator: *Allocator,
     obj: ObjectMap,
     comptime T: type,
@@ -290,4 +289,3 @@ fn deserializeArray(
     }
     return result;
 }
-
