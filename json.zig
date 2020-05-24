@@ -6,6 +6,11 @@
 /// unnecessary since we have `{to,from}Json` custom methods to use.
 /// - Non-slice pointers: JSON objects have no support for pointing to memory,
 /// so we only care about slices so that we can work with JSON arrays.
+/// All operations are NON-COPYING. This means that the memory is owned by the
+/// original value that is being (de)serialized and that only references are
+/// made to the original memory.
+
+// TODO determine if memory copies are required (or optional).
 
 const std = @import("std");
 const types = @import("types");
@@ -34,7 +39,7 @@ pub fn JsonStringMap(comptime V: type) type {
                 _ = map.putAssumeCapacity(kv.key, json_val);
             }
 
-            return .{ .Object = map };
+            return Value{ .Object = map };
         }
 
         pub fn fromJson(
@@ -51,14 +56,12 @@ pub fn JsonStringMap(comptime V: type) type {
                 _ = map.putAssumeCapacity(kv.key, v_obj);
             }
 
-            return .{ .map = map };
+            return Value{ .map = map };
         }
     };
 }
 
 
-// TODO determine whether memory copies are needed here. For now, assume that
-// they are unnecessary.
 // TODO ensure that ints and floats fit within 64 bits, otherwise return an
 // error.CannotSerialize or something
 /// Serializes `obj` into a JSON `Value`.
@@ -73,21 +76,21 @@ pub fn serialize(allocator: *Allocator, obj: var) !Value {
     }
 
     return switch (@typeInfo(T)) {
-        .Array => .{ .Array = try serializeList(allocator, obj) },
-        .Bool => .{ .Bool = obj },
-        .Float => .{ .Float = obj },
-        .Int => .{ .Integer = @intCast(i64, obj) },
+        .Array => Value{ .Array = try serializeList(allocator, obj) },
+        .Bool => Value{ .Bool = obj },
+        .Float => Value{ .Float = obj },
+        .Int => Value{ .Integer = @intCast(i64, obj) },
         .Optional => if (obj) |val| serialize(allocator, val) else .Null,
         .Pointer => |p| serializePointer(allocator, obj, p),
-        .Struct => |s| serializeStruct(allocator, obj, T, s),
-        else => error.CannotSerialize;
+        .Struct => |s| serializeStruct(allocator, obj, s),
+        else => error.CannotSerialize,
     };
 }
 
 
 pub fn deserialize(allocator: *Allocator, val: Value, comptime T: type) !T {
     if (comptime std.meta.trait.hasFn("fromJson")(T))
-        return T.fromJson(allocator, val)
+        return T.fromJson(allocator, val);
 
     // We will not support unions here because they are inefficient to handle in
     // the generic case. Rather, we handle them through custom `fromJson`
@@ -117,8 +120,7 @@ pub fn deserialize(allocator: *Allocator, val: Value, comptime T: type) !T {
 fn serializeStruct(
     allocator: *Allocator,
     obj: var,
-    comptime T: type,
-    struct_info: builtin.TypeInfo.Struct,
+    struct_info: std.builtin.TypeInfo.Struct,
 ) !Value {
     const T = @TypeOf(obj);
 
@@ -129,7 +131,7 @@ fn serializeStruct(
     
     // If `obj` is a JSON object, just wrap it up into a JSON value.
     if (T == ObjectMap) {
-        return .{ .Object = obj };
+        return Value{ .Object = obj };
     }
 
     // We do not handle the `Array` case of `Value` because we expect it
@@ -137,8 +139,8 @@ fn serializeStruct(
     // simply use a regular slice?
 
     var map = ObjectMap.init(allocator);
-    try map.ensureCapacity(s.fields.len);
-    inline for (s.fields) |field| {
+    try map.ensureCapacity(struct_info.fields.len);
+    inline for (struct_info.fields) |field| {
         const name = field.name;
         const camel_cased = comptime blk: {
             var buf: [name.len]u8 = undefined;
@@ -149,25 +151,23 @@ fn serializeStruct(
         _ = map.putAssumeCapacity(camel_cased, field_json);
     }
 
-    return .{ .Object = map };
+    return Value{ .Object = map };
 }
 
-// TODO maybe return an error if we encounter a C pointer (look at
-// Builtin.TypeInfo.Pointer.Size for more info)
 // TODO figure out if we really should be `serialize`ing a single-item pointer.
 // Should we even support single item pointers? Is this maybe related to
 // `ResultReferences` in some way?
 fn serializePointer(
     allocator: *Allocator,
     ptr: var,
-    ptr_info: builtin.TypeInfo.Pointer
+    ptr_info: std.builtin.TypeInfo.Pointer
 ) !Value {
     return if (ptr_info.size != .Slice)
-        error.CannotSerialize;
+        error.CannotSerialize
     else if (ptr_info.Child == u8)
-        .{ .String = ptr }
+        Value{ .String = ptr }
     else
-        .{ .Array = try serializeList(allocator, ptr) };
+        Value{ .Array = try serializeList(allocator, ptr) };
 }
 
 /// Serializes `arr` (either a slice or an array) to a JSON `Array`.
@@ -219,7 +219,7 @@ fn deserializeStruct(
     allocator: *Allocator,
     obj: ObjectMap,
     comptime T: type,
-    struct_info: builtin.TypeInfo.Struct,
+    struct_info: std.builtin.TypeInfo.Struct,
 ) !T {
     var result: T = undefined;
 
@@ -230,7 +230,7 @@ fn deserializeStruct(
         };
 
         if (obj.getValue(camel_cased)) |val| {
-            @field(result, f.name) = try fromJson(f.field_type, allocator, val);
+            @field(result, f.name) = try deserialize(allocator, val, f.field_type);
         } else if (@typeInfo(f.field_type) == .Optional) {
             @field(result, f.name) = null;
         } else {
@@ -249,14 +249,13 @@ fn deserializePointer(
     allocator: *Allocator,
     val: Value,
     comptime T: type,
-    ptr_info: builtin.TypeInfo.Pointer,
+    ptr_info: std.builtin.TypeInfo.Pointer,
 ) !T {
     if (ptr_info.size != .Slice)
         return error.CannotDeserialize;
 
     if (ptr_info.Child == u8) {
-        if (val != .String) return error.CannotDeserialize;
-        return std.mem.dupe(allocator, u8, val.String);
+        return if (val != .String) error.CannotDeserialize else val.String;
     }
 
     var result = try allocator.alloc(ptr_info.Child, val.Array.len);
@@ -270,7 +269,7 @@ fn deserializeArray(
     allocator: *Allocator,
     val: Value,
     comptime T: type,
-    arr_info: builtin.TypeInfo.Array,
+    arr_info: std.builtin.TypeInfo.Array,
 ) !T {
     var result: T = undefined;
 
